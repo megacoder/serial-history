@@ -1,0 +1,243 @@
+#!/bin/awk -f 
+function trim( s,	v )	{
+	v = s
+	sub( /^[ \t]*/, "", v )
+	sub( /[ \t]*$/, "", v )
+	return( v )
+}
+function asBinary( s,	i, v )	{
+	v = ""
+	for( i = 1; i <= length( s ); ++i )	{
+		c = substr( s, i, 1 )
+		v = v hexs[ c ]
+	}
+	return( v )
+}
+function interpret( s, table,	b, c, i, n, patterns, pattern, rule, text, v ) {
+	v = ""
+	n = split( table, patterns, /,/ )
+	for( i = 1; i <= n; ++i )	{
+		pattern = patterns[ i ]
+		rule = substr( pattern, 1, 8 )
+		text = substr( pattern, 10 )
+		# Apply pattern
+		for( b = 1; b <= 8; ++b )	{
+			c = substr( rule, b, 1 )
+			if( c == "x" )	{
+				continue
+			}
+			if( c != substr( s, b, 1 ) )	{
+				break
+			}
+		}
+		# If we got a whole pattern, we can append the text
+		if( b > 8 )	{
+			if( length( v ) )	{
+				v = v "," text
+			} else	{
+				v = text
+			}
+		}
+	}
+	return( v )
+}
+function doToken( token,	data, decoderRing, info, port, table )	{
+	decoderRing = ""
+	if( token ~ /.*\(...[,][0-9]\):../ )	{
+		# This is an I/O instruction
+		info = ""
+		table = ""
+		match( token, /^[^\(]*/ )
+		direction = substr( token, 1, RLENGTH )
+		if( direction ~ /^in/ )	{
+			direction = portIn
+		} else if( direction ~ /^out/ )	{
+			direction = portOut
+		}
+		io = substr( token, RLENGTH + 1 )
+		# Everything else if fixed-format '(DDD,P):VV'
+		device = substr( io, 2, 3 )
+		port = substr( io, 6, 1 )
+		data = substr( io, 9, 2 )
+		value = asBinary( data )
+		# What we got?
+		if( device == "3F8" )	{
+			device = "COM1"
+		} else if( device == "2F8" )	{
+			device = "COM2"
+		} else if( device == "3E8" )	{
+			device = "COM3"
+		} else if( device == "2E8" )	{
+			device = "COM4"
+		}
+		if( port == "0" )	{
+			if( direction == portIn )	{
+				port = "RXD"
+			} else	{
+				port = "TXD"
+			}
+			if( dlab == "1" )	{
+				baud = data
+			}
+		} else if( port == "1" )	{
+			if( direction == portIn )	{
+				port = "IER"
+			} else	{
+				port = "IER"
+			}
+			if( dlab == "1" )	{
+				baud = data baud
+				if( baud in bauds )	{
+					info = sprintf( "(%s --> %s baud)", 
+						baud, bauds[ baud ] )
+				}
+				dlab = "0"
+			} else	{
+				table = "xxxx1xxx=MSI{mdmst}," 		\
+					"xxxxx1xx=RLSI{rcvlnst},"	\
+					"xxxxxx1x=THRI{txd},"		\
+					"xxxxxxx1=RDI{rxd},"		\
+					"00000000=DISABLE"
+			}
+		} else if( port == "2" )	{
+			if( direction == portIn )	{
+				port = "IIR"
+				table =	"11xxxxxx=FIFO's,"	\
+					"00xxxxx1=NO FIFO's,"	\
+					"xxxx1xxx=RESERVED,"	\
+					"xxxxx110=MdmStatus,"	\
+					"xxxxx100=RD,"		\
+					"xxxxx010=THRE,"	\
+					"xxxxxxx1=NO_INT"
+			} else	{
+				port = "FCR"
+				table = "11xxxxxx=Trig-14,"	\
+					"10xxxxxx=Trig-8,"	\
+					"01xxxxxx=Trig-4,"	\
+					"00xxxxxx=Trig-1,"	\
+					"xxxx1xxx=DMA Mode,"	\
+					"xxxxx1xx=Clr TxFIFO,"	\
+					"xxxxxx1x=Clr RxFIFO,"	\
+					"xxxxxxx1=Ena FIFO,"	\
+					"xxxxxxx0=Dis FIFO"
+			}
+		} else if( port == "3" )	{
+			if( direction == portIn )	{
+				port = "LCR"
+			} else	{
+				port = "LCR"
+			}
+			table =	"1xxxxxxx=DLAB,"		\
+				"x1xxxxxx=BRK,"			\
+				"xx1xxxxx=SPAR,"		\
+				"xxx1xxxx=EPAR,"		\
+				"xxx0xxxx=OPAR,"		\
+				"xxxx1xxx=PARITY,"		\
+				"xxxxx1xx=2STOP,"		\
+				"xxxxx0xx=1STOP,"		\
+				"xxxxxx00=WLEN5,"		\
+				"xxxxxx01=WLEN6,"		\
+				"xxxxxx10=WLEN7,"		\
+				"xxxxxx11=WLEN8"
+			# Monitor DLAB to compute the baud rate divisor
+			dlab = substr( value, 1, 1 )
+		} else if( port == "4" )	{
+			if( direction == portIn )	{
+				port = "MCR"
+			} else	{
+				port = "MCR"
+			}
+			table =	"xxx1xxxx=LOOP,"			\
+				"xxx0xxxx=NORM,"			\
+				"xxxx1xxx=OUT2{assert},"		\
+				"xxxx0xxx=OUT2{deassert},"		\
+				"xxxxx1xx=OUT1{assert},"		\
+				"xxxxx0xx=OUT1{deassert},"		\
+				"xxxxxx1x=RTS{assert},"			\
+				"xxxxxx0x=RTS{deassert},"		\
+				"xxxxxxx1=DTR{xmit=off},"		\
+				"xxxxxxx0=DTR{xmit=on}"
+		} else if( port == "5" )	{
+			if( direction == portIn )	{
+				port = "LSR"
+			} else	{
+				port = "LSR"
+			}
+			table =	"1xxxxxxx=RxFIFO ERR,"			\
+				"x1xxxxxx=TEMT,"			\
+				"xx1xxxxx=THRE,"			\
+				"xxx1xxxx=BI{break},"			\
+				"xxxx1xxx=FE{framing},"			\
+				"xxxxx1xx=PE{parity},"			\
+				"xxxxxx1x=OE{overrun},"			\
+				"xxxxxxx1=DR{data rdy}"
+		} else if( port == "6" )	{
+			if( direction == portIn )	{
+				port = "MSR"
+			} else	{
+				port = "MSR"
+			}
+			table =	"1xxxxxxx=DCD{assert},"			\
+				"0xxxxxxx=DCD{deassert},"		\
+				"x1xxxxxx=RI{assert},"			\
+				"x0xxxxxx=RI{deassert},"		\
+				"xx1xxxxx=DSR{assert},"			\
+				"xx0xxxxx=DSR{deassert},"		\
+				"xxx1xxxx=CTS{assert},"			\
+				"xxx0xxxx=CTS{deassert},"		\
+				"xxxx1xxx=DDCD,"			\
+				"xxxxx1xx=TERI,"			\
+				"xxxxxx1x=DDSR,"			\
+				"xxxxxxx1=DCTS"
+		} else if( port == "7" )	{
+			if( direction == portIn )	{
+				port = "SCR"
+			} else	{
+				port = "SCR"
+			}
+		}
+		if( table != "" )	{
+			info = interpret( value, table )
+		}
+		decoderRing = sprintf( "; %s(%s,%s):%s %s",  
+				direction, device, port, 
+				value, info )
+	}
+	return( decoderRing )
+}
+BEGIN	{
+	hexs[ "0" ] = "0000"
+	hexs[ "1" ] = "0001"
+	hexs[ "2" ] = "0010"
+	hexs[ "3" ] = "0011"
+	hexs[ "4" ] = "0100"
+	hexs[ "5" ] = "0101"
+	hexs[ "6" ] = "0110"
+	hexs[ "7" ] = "0111"
+	hexs[ "8" ] = "1000"
+	hexs[ "9" ] = "1001"
+	hexs[ "A" ] = "1010"
+	hexs[ "B" ] = "1011"
+	hexs[ "C" ] = "1100"
+	hexs[ "D" ] = "1101"
+	hexs[ "E" ] = "1110"
+	hexs[ "F" ] = "1111"
+	portIn  = " in"
+	portOut = "out"
+	bauds[ "0060" ] = "1200"
+	bauds[ "0030" ] = "2400"
+	bauds[ "0018" ] = "4800"
+	bauds[ "000C" ] = "9600"
+	bauds[ "0006" ] = "19200"
+	bauds[ "0004" ] = "28800"
+	bauds[ "0002" ] = "57600"
+	bauds[ "0001" ] = "115200"
+}
+/./	{
+	desc = doToken( $5 )
+	code = trim( $0 )
+	while( length( code ) < 35 )	{
+		code = code " "
+	}
+	print code desc
+}
